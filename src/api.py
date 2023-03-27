@@ -4,6 +4,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from logger import log
 from typing import List, Tuple
 from datetime import datetime
 
@@ -38,8 +39,9 @@ class GmailAPI:
             service = build('gmail', 'v1', credentials=creds)
             return service
         except HttpError as error:
-            raise error
+            return error
 
+    @log
     def read_mails(self, unread=True, date_range: Tuple[str, str] = None):
         query = 'in:inbox'
         if unread:
@@ -52,7 +54,7 @@ class GmailAPI:
                 datetime.strptime(start_date, format_string)
                 datetime.strptime(end_date, format_string)
             except ValueError as error:
-                raise error
+                return error
 
             query += f' after:{start_date} before:{end_date}'
 
@@ -80,7 +82,7 @@ class GmailAPI:
                 result.append(mail_info)
             return result
         except HttpError as error:
-            raise error
+            return error
 
 
 class SheetsAPI:
@@ -95,6 +97,7 @@ class SheetsAPI:
     def get_id(self):
         return self.__spreadsheet_id
 
+    @log
     def append_values(self, range_name: str, values: List[List[str]]):
         try:
             body = {
@@ -108,6 +111,7 @@ class SheetsAPI:
         except HttpError as error:
             return error
 
+    @log
     def update_values(self, range_name: str, values: List[List[str]]):
         try:
             body = {
