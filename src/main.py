@@ -1,56 +1,64 @@
-from __future__ import print_function
+import argparse
+from api import GmailAPI, ChatGPT, SheetsAPI
+from logger import log, logger
+from datetime import datetime, timedelta
+from dotenv import load_dotenv, set_key
+import os
 
-import os.path
+load_dotenv()
+gpt_api = ChatGPT(os.getenv('OPENAI_API_KEY'))
+gmail_api = GmailAPI()
+parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+# as we are using crontab job, we need to save it somewhere
+if os.getenv('spreadsheet_id') is None:
+    sheets_api = SheetsAPI('job-applications')
+    os.putenv('spreadsheet_id', sheets_api.get_id())
+    set_key(os.path.join(parent_path, '.env'), 'spreadsheet_id', sheets_api.get_id())
+else:
+    spreadsheet_id = os.getenv('spreadsheet_id')
+    sheets_api = SheetsAPI('job-applications', spreadsheet_id)
 
-# If modifying these scopes, delete the file token.json.
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+
+@log
+def update(unread, start_date, end_date):
+    mails = gmail_api.read_mails(unread, (start_date, end_date))
+    answers = gpt_api.answer(mails)
+    for answer in answers:
+        if isinstance(answer, dict) and len(answer.keys()) == 2:
+            company, status = answer.keys()
+            to_insert = [[answer[company], answer[status]]]
+            fields = sheets_api.find(answer[company])
+
+            if fields != -1:
+                sheets_api.update_values(fields, to_insert)
+            else:
+                sheets_api.append_values("A1:B1", to_insert)
 
 
-def main():
-    """Shows basic usage of the Gmail API.
-    Lists the user's Gmail labels.
-    """
-    creds = None
-    # The file token.json stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first
-    # time.
-    if os.path.exists('../token.json'):
-        creds = Credentials.from_authorized_user_file('../token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                '../credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('../token.json', 'w') as token:
-            token.write(creds.to_json())
+@log
+def main(unread, start_date, end_date):
+    format_str = "%Y/%m/%d"
+    today = datetime.today().date()
+    tomorrow = today + timedelta(days=1)
+    today = today.strftime(format_str)
+    tomorrow = tomorrow.strftime(format_str)
 
-    try:
-        # Call the Gmail API
-        service = build('gmail', 'v1', credentials=creds)
-        results = service.users().labels().list(userId='me').execute()
-        labels = results.get('labels', [])
-
-        if not labels:
-            print('No labels found.')
-            return
-        print('Labels:')
-        for label in labels:
-            print(label['name'])
-
-    except HttpError as error:
-        # TODO(developer) - Handle errors from gmail API.
-        print(f'An error occurred: {error}')
+    if os.getenv('INIT_API') is None:
+        os.putenv('INIT_API', '1')
+        set_key(os.path.join(parent_path, '.env'), 'INIT_API', '1')
+        logger.info("Fetching for the first time")
+        update(unread, start_date, end_date)
+    else:
+        logger.info("Updating information every day")
+        update(False, today, tomorrow)
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='A program that updates the current status of job application')
+    parser.add_argument('start_date', nargs='?', default='2023/03/20', help='from where to start scrapping, format %Y/%m/%d')
+    parser.add_argument('end_date', nargs='?', default='2023/03/29', help='until what time to end scrapping, %Y/%m/%d')
+    parser.add_argument('--unread', action="store_true", help='whether to read unread mails or not')
+    args = parser.parse_args()
+
+    main(args.unread, args.start_date, args.end_date)

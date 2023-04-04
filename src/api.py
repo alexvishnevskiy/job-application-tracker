@@ -1,4 +1,6 @@
 import os.path
+import pickle
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -9,27 +11,37 @@ from email import message_from_bytes
 from base64 import urlsafe_b64decode
 from bs4 import BeautifulSoup
 from logger import log
+import time
+import openai
 import re
 from typing import List, Tuple
 from datetime import datetime, timedelta
 
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/gmail.readonly']
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.modify'
+]
 
 
 def _build_services():
+    parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    token_path = os.path.join(parent_path, 'token.json')
+    credentials_path = os.path.join(parent_path, '/credentials.json')
     creds = None
-    if os.path.exists('../token.json'):
-        creds = Credentials.from_authorized_user_file('../token.json', SCOPES)
+
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
         # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                '../credentials.json', SCOPES)
+                credentials_path, SCOPES)
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-        with open('../token.json', 'w') as token:
+        with open(token_path, 'w') as token:
             token.write(creds.to_json())
     return creds
 
@@ -59,6 +71,20 @@ def _preprocess(text):
     return text
 
 
+def _retry(func):
+    def handler(*args, tries=3, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except openai.error.RateLimitError as err:
+            time.sleep(3)
+            if tries > 0:
+                return handler(*args, tries - 1, **kwargs)
+            else:
+                raise err
+
+    return handler
+
+
 class GmailAPI:
     def __init__(self):
         self.service = self._build()
@@ -71,7 +97,6 @@ class GmailAPI:
         except HttpError as error:
             raise error
 
-    #TODO: mark as read mail after read
     @log
     def read_mails(self, unread=True, date_range: Tuple[str, str] = None):
         query = 'in:inbox'
@@ -89,7 +114,7 @@ class GmailAPI:
         else:
             # 6-month interval
             end_time = datetime.today().date()
-            start_time = (end_time - timedelta(days=30*6))
+            start_time = (end_time - timedelta(days=30 * 6))
 
             start_date = start_time.strftime(format_string)
             end_date = end_time.strftime(format_string)
@@ -102,7 +127,7 @@ class GmailAPI:
             messages = []
 
             # gmail api can only retrieve 500 mails maximum
-            while end_time > start_time:
+            while end_time >= start_time:
                 response = self.service.users().messages().list(userId='me', q=query, maxResults=500).execute()
                 if response['resultSizeEstimate'] == 0:
                     break
@@ -129,6 +154,11 @@ class GmailAPI:
                 msg = self.service.users().messages().get(userId='me', id=message['id'], format='full').execute()
                 payload = msg['payload']
                 headers = payload['headers']
+
+                # mark message as read
+                self.service.users().messages().modify(
+                    userId='me', id=message['id'], body={'removeLabelIds': ['UNREAD']}
+                ).execute()
 
                 data = ''
                 if 'parts' in payload:
@@ -229,6 +259,40 @@ class SheetsAPI:
             raise error
 
 
-# api = SheetsAPI(spreadsheet_id="1W0cESqOEZAV7cpIXYuh0kGouxWiL0zg1nfmHzTHnwlk")
-# api = GmailAPI()
-# print(api.read_mails(date_range=("2023/03/12", "2023/03/13")))
+class ChatGPT:
+    _question = "Is this mail about my job application status? Invitations to take assessments " \
+                "are also considered as part of application, rejection messages as well. " \
+                "If so, could you tell me the current status(applied, in process, rejection) " \
+                "and the company name in json format(company, status)?\n"
+
+    def __init__(self, api_key=None):
+        assert api_key is not None
+        openai.api_key = api_key
+
+    @_retry
+    def gpt_call(self, message):
+        return openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=[message])
+
+    @log
+    def answer(self, mails):
+        assert isinstance(mails[0], dict)
+
+        messages = [
+            {
+                "role": "user",
+                "content": ChatGPT._question + f"Email: {mail['mail']}, subject: {mail['subject']}\n {mail['text']}"
+            }
+            for mail in mails
+        ]
+        responses = []
+        for message in tqdm(messages):
+            resp = self.gpt_call(message)
+            ans = resp['choices'][0]['message']['content']
+            try:
+                if ans.lower().find('no') != -1:
+                    responses.append('No')
+                else:
+                    responses.append(eval(ans))
+            except:
+                responses.append('No')
+        return responses

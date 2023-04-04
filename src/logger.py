@@ -1,9 +1,7 @@
 import logging
 
 # Create and configure logger
-logging.basicConfig(filename="../logs.log",
-                    format='%(asctime)s %(message)s',
-                    filemode='w')
+logging.basicConfig(format='%(asctime)s %(message)s')
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 
@@ -17,4 +15,5 @@ def log(func):
             return res
         except Exception as e:
             logger.error(e)
+            raise e
     return handler
