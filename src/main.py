@@ -3,12 +3,16 @@ from api import GmailAPI, ChatGPT, SheetsAPI
 from logger import log, logger
 from datetime import datetime, timedelta
 from dotenv import load_dotenv, set_key
+from apscheduler.schedulers.blocking import BlockingScheduler
 import os
 
 load_dotenv()
+parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 gpt_api = ChatGPT(os.getenv('OPENAI_API_KEY'))
 gmail_api = GmailAPI()
-parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sched = BlockingScheduler()
+
 
 # as we are using crontab job, we need to save it somewhere
 if os.getenv('spreadsheet_id') is None:
@@ -61,4 +65,5 @@ if __name__ == '__main__':
     parser.add_argument('--unread', action="store_true", help='whether to read unread mails or not')
     args = parser.parse_args()
 
-    main(args.unread, args.start_date, args.end_date)
+    sched.add_job(main, 'interval', hours=12, args=(args.unread, args.start_date, args.end_date))
+    sched.start()

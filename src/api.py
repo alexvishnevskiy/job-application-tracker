@@ -138,7 +138,9 @@ class GmailAPI:
                 msg_str = urlsafe_b64decode(message['raw'].encode('ASCII')).decode('utf-8')
                 email_message = message_from_bytes(msg_str.encode('utf-8'))
 
-                end_time_format = '%a, %d %b %Y %H:%M:%S %z'
+                end_time_format = '%d %b %Y %H:%M:%S %z'
+                if email_message['Date'].find(',') != -1:
+                    end_time_format = '%a, ' + end_time_format
                 if email_message['Date'].find('(UTC)') != -1:
                     end_time_format += ' (%Z)'
 
